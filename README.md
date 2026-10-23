@@ -7,7 +7,7 @@ per-pubkey Ark address, or by paying a Lightning invoice. Payments arrive in a
 (`barkd`), and the plugin polls its REST API to credit them.
 
 strfry itself is unchanged. The plugin uses the standard
-[plugin interface](../../docs/plugins.md). It is Node.js (18 or newer) with no npm
+[plugin interface](https://github.com/hoytech/strfry/blob/master/docs/plugins.md). It is Node.js (18 or newer) with no npm
 dependencies.
 
 ## How it works
@@ -86,7 +86,7 @@ keep that behaviour, use a small wrapper script that sets the variables:
 ```sh
 #!/bin/sh
 export BARKD_URL=http://127.0.0.1:3000 BARKD_TOKEN=... BARK_FEE_SATS=1 BARK_FREE_KINDS=0,3,10002
-exec node /path/to/strfry/plugins/bark-paid-writes/bark-paid-writes.js
+exec node /path/to/strfry-bark-paid-writes/bark-paid-writes.js
 ```
 
 ## Paid reads (optional, needs the `readAllowlistFile` patch)
@@ -142,10 +142,10 @@ operator's pubkey beforehand.
 
 ## Tests
 
-From the strfry repository root:
+From this repository:
 
 ```sh
-node --test plugins/bark-paid-writes/test/plugin.test.js
+npm test
 ```
 
 The tests start the plugin exactly as strfry does (one JSON line per event on
@@ -156,22 +156,23 @@ exactly once, pending payments ignored), `authed` mode, restarts, the lock,
 barkd being down, bearer-token auth, and the read-allowlist file. No real
 bitcoin is involved.
 
-`test/relay-e2e.test.mjs` runs a real `./strfry relay` with the plugin as
+`test/relay-e2e.test.mjs` runs a real `strfry relay` with the plugin as
 its write policy, then publishes signed events over a websocket: it checks
 the reject message, a free kind, a payment, accepted writes, and a REQ that
 returns exactly the paid events. A second case covers paid reads through
-`readAllowlistFile`. It needs `make` and `cd test && npm ci`, and
-it skips itself otherwise:
+`readAllowlistFile`. Point `STRFRY_DIR` at a strfry checkout that has been
+built (`make`) and has its test dependencies installed (`cd test && npm ci`).
+The tests skip themselves without it:
 
 ```sh
-node --test plugins/bark-paid-writes/test/relay-e2e.test.mjs
+STRFRY_DIR=/path/to/strfry npm run test:e2e
 ```
 
 You can also feed events by hand:
 
 ```sh
-node plugins/bark-paid-writes/test/mock-barkd.js 3000 &
-BARKD_URL=http://127.0.0.1:3000 ./plugins/bark-paid-writes/bark-paid-writes.js < plugins/bark-paid-writes/test/sample-events.jsonl
+node test/mock-barkd.js 3000 &
+BARKD_URL=http://127.0.0.1:3000 ./bark-paid-writes.js < test/sample-events.jsonl
 ```
 
 ## Limitations
