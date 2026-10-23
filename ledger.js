@@ -125,6 +125,7 @@ class Ledger {
         const tmp = `${this.file}.tmp-${process.pid}`;
         fs.writeFileSync(tmp, JSON.stringify(this.data));
         fs.renameSync(tmp, this.file);
+        if (this.onFlush) this.onFlush(this.data);
     }
 }
 

@@ -77,6 +77,8 @@ client ──EVENT──▶ strfry ──JSON line──▶ bark-paid-writes ─
 | `BARK_TOPUP_HOST` | `127.0.0.1` | bind address for the top-up endpoint |
 | `BARK_TOPUP_URL` | *(empty)* | public top-up URL to show in reject messages |
 | `BARK_TOPUP_MAX_SATS` | `100000` | largest invoice the endpoint will create |
+| `BARK_READ_ALLOWLIST` | *(empty: off)* | file to write for strfry's `relay.auth.readAllowlistFile` (see below) |
+| `BARK_READ_MIN_SATS` | `1` | balance a pubkey needs to be listed as a reader |
 
 strfry only reloads a plugin automatically when the command has no spaces. To
 keep that behaviour, use a small wrapper script that sets the variables:
@@ -86,6 +88,25 @@ keep that behaviour, use a small wrapper script that sets the variables:
 export BARKD_URL=http://127.0.0.1:3000 BARKD_TOKEN=... BARK_FEE_SATS=1 BARK_FREE_KINDS=0,3,10002
 exec node /path/to/strfry/plugins/bark-paid-writes/bark-paid-writes.js
 ```
+
+## Paid reads (optional, needs the `readAllowlistFile` patch)
+
+strfry's plugin interface only covers writes. The companion commit adds
+`relay.auth.readAllowlistFile` to strfry: when it is set, every REQ, COUNT and
+NEG-OPEN requires NIP-42 AUTH as a pubkey listed in that file. If you set
+`BARK_READ_ALLOWLIST` to the same path, the plugin keeps the file up to date.
+Pubkeys with at least `BARK_READ_MIN_SATS` of credit, plus `BARK_FREE_PUBKEYS`,
+can read. strfry notices changes to the file within a second.
+
+```
+relay { auth { readAllowlistFile = "/var/lib/strfry/readers.txt" } }   # strfry.conf
+BARK_READ_ALLOWLIST=/var/lib/strfry/readers.txt                        # plugin wrapper
+```
+
+Reading is not charged per query. Holding a balance is what grants access.
+strfry starts the plugin on the first write, and until then the file does not
+exist and all reads are refused. To avoid that, create the file with the
+operator's pubkey beforehand.
 
 ## Try it on signet
 
@@ -132,12 +153,14 @@ stdin), against a mock barkd (`test/mock-barkd.js`) whose responses copy the
 bark-rest JSON shapes. They cover charging, per-kind and fractional prices,
 free kinds and pubkeys, Ark and Lightning crediting (each payment credited
 exactly once, pending payments ignored), `authed` mode, restarts, the lock,
-barkd being down, and bearer-token auth. No real bitcoin is involved.
+barkd being down, bearer-token auth, and the read-allowlist file. No real
+bitcoin is involved.
 
 `test/relay-e2e.test.mjs` runs a real `./strfry relay` with the plugin as
 its write policy, then publishes signed events over a websocket: it checks
 the reject message, a free kind, a payment, accepted writes, and a REQ that
-returns exactly the paid events. It needs `make` and `cd test && npm ci`, and
+returns exactly the paid events. A second case covers paid reads through
+`readAllowlistFile`. It needs `make` and `cd test && npm ci`, and
 it skips itself otherwise:
 
 ```sh
@@ -164,5 +187,6 @@ BARKD_URL=http://127.0.0.1:3000 ./plugins/bark-paid-writes/bark-paid-writes.js <
   matters.
 * Polling reads the whole wallet history each time. barkd's notification
   stream (`/api/v1/notifications`) would avoid that.
-* Reads are not gated by this plugin. See `BARK_PLAN.md` and the optional
-  `relay.auth.readAllowlistFile` change.
+* Read gating needs the small core patch (`relay.auth.readAllowlistFile`).
+  Subscriptions that are already open keep running when a pubkey drops off
+  the list. Only new REQs are checked.

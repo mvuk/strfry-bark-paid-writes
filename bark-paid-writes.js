@@ -13,6 +13,7 @@
 
 'use strict';
 
+const fs = require('fs');
 const http = require('http');
 const readline = require('readline');
 const { BarkdClient } = require('./barkd.js');
@@ -40,6 +41,8 @@ const cfg = {
     topupHost: env.BARK_TOPUP_HOST || '127.0.0.1',
     topupMaxSats: parseInt(env.BARK_TOPUP_MAX_SATS || '100000', 10),
     barkdTimeoutMs: parseInt(env.BARKD_TIMEOUT_MS || '3000', 10),
+    readAllowlist: env.BARK_READ_ALLOWLIST || '',         // file for strfry's relay.auth.readAllowlistFile
+    readMinMsat: Math.round(parseFloat(env.BARK_READ_MIN_SATS ?? '1') * 1000),
 };
 
 if (!(cfg.feeMsat >= 0)) die('BARK_FEE_SATS must be a non-negative number');
@@ -72,6 +75,31 @@ if (!owner) {
 
 const HEX64 = /^[0-9a-f]{64}$/;
 const sats = (msat) => (msat / 1000).toLocaleString('en-US', { maximumFractionDigits: 3 });
+
+
+// ---- read access: pubkeys with enough credit (plus free pubkeys) may read ----
+//
+// Writes the file named by strfry's optional relay.auth.readAllowlistFile.
+// Only rewritten when the set of pubkeys changes.
+
+let lastAllowlist = null;
+
+function writeReadAllowlist(data) {
+    if (!cfg.readAllowlist) return;
+    const keys = new Set(cfg.freePubkeys);
+    for (const [pubkey, msat] of Object.entries(data.balances)) if (msat >= cfg.readMinMsat) keys.add(pubkey);
+    const text = [...keys].sort().join('\n') + '\n';
+    if (text === lastAllowlist) return;
+    const tmp = `${cfg.readAllowlist}.tmp-${process.pid}`;
+    fs.writeFileSync(tmp, '# written by bark-paid-writes; pubkeys allowed to read\n' + text);
+    fs.renameSync(tmp, cfg.readAllowlist);
+    lastAllowlist = text;
+}
+
+if (owner && cfg.readAllowlist) {
+    ledger.onFlush = writeReadAllowlist;
+    writeReadAllowlist(ledger.data);
+}
 
 
 // ---- payments: barkd -> ledger ----

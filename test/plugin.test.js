@@ -34,6 +34,7 @@ function req(pubkey, { kind = 1, sourceType = 'IP4', authed } = {}) {
 
 function startPlugin(env) {
     const child = spawn(process.execPath, [PLUGIN], { env: { ...process.env, ...env }, stdio: ['pipe', 'pipe', 'pipe'] });
+    child.env = env;
     let out = '';
     let waiters = [];
     child.stderrText = '';
@@ -54,6 +55,12 @@ function startPlugin(env) {
     });
     child.stop = () => new Promise((resolve) => { child.on('exit', resolve); child.stdin.end(); });
     return child;
+}
+
+function dir0(t) {
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), 'bark-paid-writes-read-'));
+    t.after(() => fs.rmSync(d, { recursive: true, force: true }));
+    return d;
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -262,4 +269,23 @@ test('bad BARK_KIND_FEES makes the plugin exit with a clear error', async () => 
     const code = await new Promise((r) => child.on('exit', r));
     assert.equal(code, 1);
     assert.match(err, /bad BARK_KIND_FEES entry 'seven:1'/);
+});
+
+test('BARK_READ_ALLOWLIST lists pubkeys with enough credit, plus free pubkeys', async (t) => {
+    const { plugin, mock } = await setup(t, { BARK_READ_ALLOWLIST: path.join(dir0(t), 'read.txt'), BARK_FREE_PUBKEYS: BOB, BARK_READ_MIN_SATS: '2' });
+    const file = plugin.env.BARK_READ_ALLOWLIST;
+    const keys = () => fs.readFileSync(file, 'utf8').split('\n').filter((l) => /^[0-9a-f]{64}$/.test(l));
+
+    await waitFor(() => fs.existsSync(file));
+    assert.deepEqual(keys(), [BOB]);
+
+    await plugin.send(req(ALICE));
+    mock.receiveArk('tark1mockaddress0', 3);
+    await waitFor(() => keys().includes(ALICE));
+    assert.deepEqual(keys(), [ALICE, BOB]);
+
+    await plugin.send(req(ALICE)); // 2 left: still a reader
+    await plugin.send(req(ALICE)); // 1 left: below BARK_READ_MIN_SATS
+    await waitFor(() => !keys().includes(ALICE));
+    assert.deepEqual(keys(), [BOB]);
 });

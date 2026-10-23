@@ -105,3 +105,83 @@ relay {
         throw e;
     }
 });
+
+test('paid reads via relay.auth.readAllowlistFile', { skip }, async (t) => {
+    const { finalizeEvent } = await import(testDeps);
+    const { openWebSocket, WsClient, waitForRelay } = await import(path.join(root, 'test/utils/websocketClient.js'));
+    const { hexToBytes, signEvent } = await import(path.join(root, 'test/utils/events.js'));
+    const ids = JSON.parse(fs.readFileSync(path.join(root, 'test/utils/dummyIds.json'), 'utf8'));
+
+    const mock = createMockBarkd();
+    const barkdUrl = await mock.listen();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bark-paid-reads-e2e-'));
+    fs.mkdirSync(path.join(dir, 'db'));
+    const port = 40680 + Math.floor(Math.random() * 100);
+    const allowlist = path.join(dir, 'readers.txt');
+
+    const wrapper = path.join(dir, 'plugin.sh');
+    fs.writeFileSync(wrapper, [
+        '#!/bin/sh',
+        `export BARKD_URL=${barkdUrl} BARK_LEDGER=${dir}/ledger.json BARK_POLL_SECONDS=0.2 BARK_READ_ALLOWLIST=${allowlist}`,
+        `exec ${process.execPath} ${path.join(here, '..', 'bark-paid-writes.js')}`,
+        '',
+    ].join('\n'), { mode: 0o755 });
+
+    const conf = path.join(dir, 'strfry.conf');
+    fs.writeFileSync(conf, `
+db = "${dir}/db/"
+relay {
+  bind = "127.0.0.1"
+  port = ${port}
+  nofiles = 0
+  auth { enabled = true
+         serviceUrl = "wss://relay.test"
+         readAllowlistFile = "${allowlist}" }
+  writePolicy { plugin = "${wrapper}" }
+}
+`);
+
+    const relay = spawn(strfryBin, ['--config', conf, 'relay'], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let logs = '';
+    relay.stdout.on('data', (d) => logs += d);
+    relay.stderr.on('data', (d) => logs += d);
+    const wsUrl = `ws://127.0.0.1:${port}`;
+    let client;
+    t.after(async () => {
+        if (client) await client.close();
+        relay.kill('SIGTERM');
+        await Promise.race([new Promise((r) => relay.once('exit', r)), sleep(2000)]);
+        await mock.close();
+        fs.rmSync(dir, { recursive: true, force: true });
+    });
+
+    await waitForRelay(wsUrl);
+    client = new WsClient(await openWebSocket(wsUrl));
+
+    try {
+        client.send(['REQ', 'r1', { kinds: [1] }]);
+        const challenge = (await client.waitFor((m) => m[0] === 'AUTH'))[1];
+        assert.match((await client.waitFor((m) => m[0] === 'CLOSED' && m[1] === 'r1'))[2], /auth-required/);
+
+        client.send(['AUTH', signEvent(challenge, 'wss://relay.test', ids[0].sec)]);
+        assert.equal((await client.waitFor((m) => m[0] === 'OK', 8000))[2], true);
+
+        // The first write starts the plugin and gets this pubkey its Ark address.
+        const ev = finalizeEvent({ kind: 1, created_at: Math.floor(Date.now() / 1000), tags: [], content: 'x' }, hexToBytes(ids[0].sec));
+        client.send(['EVENT', ev]);
+        assert.match((await client.waitFor((m) => m[0] === 'OK' && m[1] === ev.id, 8000))[3], /tark1mockaddress0/);
+
+        client.send(['REQ', 'r2', { kinds: [1] }]);
+        assert.match((await client.waitFor((m) => m[0] === 'CLOSED' && m[1] === 'r2'))[2], /restricted:/);
+
+        mock.receiveArk('tark1mockaddress0', 10);
+        await sleep(1800); // plugin poll + strfry's once-per-second file check
+
+        client.send(['REQ', 'r3', { kinds: [1] }]);
+        const msgs = await client.collectUntil((m) => (m[0] === 'EOSE' || m[0] === 'CLOSED') && m[1] === 'r3', 4000);
+        assert.equal(msgs.at(-1)[0], 'EOSE', 'paid pubkey can read');
+    } catch (e) {
+        e.message += `\n\nrelay logs:\n${logs}`;
+        throw e;
+    }
+});
