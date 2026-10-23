@@ -8,7 +8,7 @@ pay for running the relay.
 This is a strfry write-policy plugin. Each pubkey has a prepaid balance, and
 each event it writes costs a small fee. Users top up by sending sats to their
 own per-pubkey Ark address, or by paying a Lightning invoice. Payments arrive
-in a [bark](https://gitlab.com/ark-bitcoin/bark) wallet run by the relay
+in a [Bark](https://gitlab.com/ark-bitcoin/bark) wallet run by the relay
 operator (`barkd`), and the plugin polls its REST API to credit them.
 
 **Paid writes work on stock strfry.** The plugin uses the standard
@@ -179,8 +179,8 @@ either way.
 
 ## Try it on signet
 
-1. **Run barkd** (from the [bark releases](https://gitlab.com/ark-bitcoin/bark/-/releases),
-   or `cargo build --release --bin barkd` in a bark checkout):
+1. **Run barkd** (from the [Bark releases](https://gitlab.com/ark-bitcoin/bark/-/releases),
+   or `cargo build --release --bin barkd` in a Bark checkout):
 
    ```sh
    barkd --datadir ~/.barkd-relay &
@@ -203,7 +203,7 @@ either way.
 3. **Post an event** with any client. It is rejected, and the message includes
    your Ark address.
 4. **Pay.** Get signet sats from the [faucet](https://signet.2nd.dev). Then
-   either send them to that address from any bark wallet
+   either send them to that address from any Bark wallet
    (`bark send <tark1…> 100sat`), or fetch an invoice with
    `curl 'localhost:PORT/topup?pubkey=<hex>&sats=100'` and pay it over Lightning.
 5. Within `BARK_POLL_SECONDS`, the strfry log shows

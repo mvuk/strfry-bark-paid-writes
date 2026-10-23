@@ -1,7 +1,7 @@
-# bark × strfry: plan
+# Bark × strfry: plan
 
 **Goal:** a strfry operator can charge for relay use with instant, small
-payments. Users pay over Ark (arkoor) or Lightning, into a bark wallet that
+payments. Users pay over Ark (arkoor) or Lightning, into a Bark wallet that
 the operator runs. This gives the relay spam resistance (every write costs
 something) and an income that does not depend on ads or a single patron.
 
