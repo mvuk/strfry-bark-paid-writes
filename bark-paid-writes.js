@@ -1,0 +1,255 @@
+#!/usr/bin/env node
+
+// strfry write-policy plugin: metered writes paid with bark (Ark / Lightning).
+//
+// Each pubkey has a prepaid balance. Every event written over a client
+// connection costs BARK_FEE_SATS. When a pubkey is out of credit, the event is
+// rejected with a "restricted:" message telling the user where to pay. Payments
+// are found by polling barkd (the bark wallet daemon) and credited to the
+// pubkey that owns the receiving Ark address or Lightning invoice.
+//
+// strfry core is untouched; see README.md for setup and BARK_PLAN.md for the
+// rest of the idea. Requires Node 18+ (global fetch), no npm dependencies.
+
+'use strict';
+
+const http = require('http');
+const readline = require('readline');
+const { BarkdClient } = require('./barkd.js');
+const { Ledger } = require('./ledger.js');
+
+
+// ---- configuration (environment variables) ----
+
+const env = process.env;
+const list = (s) => (s || '').split(',').map(x => x.trim()).filter(Boolean);
+
+const cfg = {
+    barkdUrl: env.BARKD_URL || 'http://127.0.0.1:3000',
+    barkdToken: env.BARKD_TOKEN || '',
+    ledgerFile: env.BARK_LEDGER || './bark-paid-writes-ledger.json',
+    feeMsat: Math.round(parseFloat(env.BARK_FEE_SATS ?? '1') * 1000),
+    chargeMode: env.BARK_CHARGE || 'author',              // 'author' (event.pubkey) or 'authed' (NIP-42 pubkey)
+    chargeSources: new Set(list(env.BARK_CHARGE_SOURCES || 'IP4,IP6')),
+    freeKinds: new Set(list(env.BARK_FREE_KINDS).map(Number)),
+    kindFeesMsat: parseKindFees(env.BARK_KIND_FEES),     // e.g. "1:1, 7:0.1, 30023:21" (kind:sats)
+    freePubkeys: new Set(list(env.BARK_FREE_PUBKEYS)),
+    pollMs: Math.round(parseFloat(env.BARK_POLL_SECONDS ?? '10') * 1000),
+    topupUrl: env.BARK_TOPUP_URL || '',                   // public URL shown to users (e.g. a page in front of the top-up endpoint)
+    topupPort: env.BARK_TOPUP_PORT ? parseInt(env.BARK_TOPUP_PORT, 10) : null, // unset = no endpoint, 0 = any free port
+    topupHost: env.BARK_TOPUP_HOST || '127.0.0.1',
+    topupMaxSats: parseInt(env.BARK_TOPUP_MAX_SATS || '100000', 10),
+    barkdTimeoutMs: parseInt(env.BARKD_TIMEOUT_MS || '3000', 10),
+};
+
+if (!(cfg.feeMsat >= 0)) die('BARK_FEE_SATS must be a non-negative number');
+
+function parseKindFees(s) {
+    const m = new Map();
+    for (const pair of list(s)) {
+        const [kind, fee] = pair.split(':').map((x) => x.trim());
+        const msat = Math.round(parseFloat(fee) * 1000);
+        if (!/^\d+$/.test(kind) || !(msat >= 0)) die(`bad BARK_KIND_FEES entry '${pair}' (want kind:sats)`);
+        m.set(Number(kind), msat);
+    }
+    return m;
+}
+
+const feeFor = (kind) => cfg.kindFeesMsat.has(kind) ? cfg.kindFeesMsat.get(kind) : cfg.feeMsat;
+if (!['author', 'authed'].includes(cfg.chargeMode)) die("BARK_CHARGE must be 'author' or 'authed'");
+
+
+// ---- state ----
+
+const log = (...a) => console.error('[bark-paid-writes]', ...a); // stderr ends up in the strfry log
+const barkd = new BarkdClient({ url: cfg.barkdUrl, token: cfg.barkdToken, timeoutMs: cfg.barkdTimeoutMs });
+const ledger = new Ledger(cfg.ledgerFile);
+const owner = ledger.acquireLock();
+
+if (!owner) {
+    log(`ledger ${ledger.file} is owned by another process; client writes will be rejected by this copy`);
+}
+
+const HEX64 = /^[0-9a-f]{64}$/;
+const sats = (msat) => (msat / 1000).toLocaleString('en-US', { maximumFractionDigits: 3 });
+
+
+// ---- payments: barkd -> ledger ----
+
+let polling = false;
+
+async function pollPayments() {
+    if (polling) return;
+    polling = true;
+    try {
+        const movements = await barkd.history();
+        for (const m of movements || []) {
+            if (m.status !== 'successful') continue;
+            (m.received_on || []).forEach((dest, i) => {
+                const d = dest.destination || {};
+                const pubkey = ledger.ownerOf(d.type, d.value);
+                if (!pubkey || !(dest.amount_sat > 0)) return;
+                if (ledger.credit(`${m.id}:${i}`, pubkey, dest.amount_sat * 1000)) {
+                    log(`credited ${dest.amount_sat} sat to ${pubkey} (movement ${m.id}, ${d.type})`);
+                }
+            });
+        }
+    } catch (e) {
+        log(`polling barkd failed: ${e.message}`);
+    } finally {
+        polling = false;
+    }
+}
+
+// One Ark address per pubkey, created on first need and reused afterwards.
+async function arkAddressFor(pubkey) {
+    let addr = ledger.addressFor(pubkey);
+    if (addr || !owner) return addr;
+    try {
+        addr = await barkd.newArkAddress();
+        ledger.setAddress(pubkey, addr);
+    } catch (e) {
+        log(`could not get an Ark address from barkd: ${e.message}`);
+    }
+    return addr;
+}
+
+
+// ---- write policy ----
+
+async function decide(req) {
+    const ev = req.event;
+
+    if (!cfg.chargeSources.has(req.sourceType)) return { action: 'accept' };   // imports, sync, stream
+    if (!owner) return { action: 'reject', msg: 'error: payment ledger unavailable' };
+    if (cfg.freeKinds.has(ev.kind)) return { action: 'accept' };
+
+    let payer = ev.pubkey;
+    if (cfg.chargeMode === 'authed') {
+        if (!req.authed) return { action: 'reject', msg: 'auth-required: this relay charges per event; please authenticate (NIP-42)' };
+        payer = req.authed;
+    }
+
+    if (cfg.freePubkeys.has(payer)) return { action: 'accept' };
+    const fee = feeFor(ev.kind);
+    if (fee === 0 || ledger.tryDebit(payer, fee)) return { action: 'accept' };
+
+    return { action: 'reject', msg: await paymentRequiredMsg(payer, ev.kind, fee) };
+}
+
+async function paymentRequiredMsg(pubkey, kind, fee) {
+    const price = cfg.kindFeesMsat.has(kind) ? `${sats(fee)} sat per kind ${kind} event` : `${sats(fee)} sat per event`;
+    let msg = `restricted: payment required (${price}, balance ${sats(ledger.balance(pubkey))} sat).`;
+    const addr = await arkAddressFor(pubkey);
+    if (addr) msg += ` Send any amount over Ark to ${addr}`;
+    if (cfg.topupUrl) msg += `${addr ? ' or' : ''} top up with Lightning at ${cfg.topupUrl}`;
+    if (addr || cfg.topupUrl) msg += `; credit goes to pubkey ${pubkey.slice(0, 8)}…`;
+    return msg;
+}
+
+
+// ---- optional top-up endpoint (Lightning invoices) ----
+//
+// GET /topup?pubkey=<hex>[&sats=<n>]
+//   -> { pubkey, balance_sat, fee_sat_per_event, ark_address, invoice? }
+// Binds to localhost by default; put a web page or reverse proxy in front.
+
+function startTopupServer() {
+    const server = http.createServer(async (httpReq, res) => {
+        const reply = (code, obj) => {
+            res.writeHead(code, { 'content-type': 'application/json' });
+            res.end(JSON.stringify(obj));
+        };
+        try {
+            const u = new URL(httpReq.url, 'http://x');
+            if (httpReq.method !== 'GET' || u.pathname !== '/topup') return reply(404, { error: 'not found' });
+
+            const pubkey = (u.searchParams.get('pubkey') || '').toLowerCase();
+            if (!HEX64.test(pubkey)) return reply(400, { error: 'pubkey must be 64 hex characters' });
+
+            const out = {
+                pubkey,
+                balance_sat: ledger.balance(pubkey) / 1000,
+                fee_sat_per_event: cfg.feeMsat / 1000,
+                fee_sat_by_kind: Object.fromEntries([...cfg.kindFeesMsat].map(([k, v]) => [k, v / 1000])),
+                free_kinds: [...cfg.freeKinds],
+                ark_address: await arkAddressFor(pubkey) || null,
+            };
+
+            if (u.searchParams.has('sats')) {
+                const amount = parseInt(u.searchParams.get('sats'), 10);
+                if (!(amount > 0 && amount <= cfg.topupMaxSats)) return reply(400, { error: `sats must be 1..${cfg.topupMaxSats}` });
+                out.invoice = await barkd.createInvoice(amount, `relay credit for ${pubkey}`);
+                ledger.addInvoice(out.invoice, pubkey);
+            }
+            reply(200, out);
+        } catch (e) {
+            log(`top-up request failed: ${e.message}`);
+            reply(502, { error: 'wallet unavailable' });
+        }
+    });
+    server.on('error', (e) => log(`top-up server: ${e.message}`));
+    server.listen(cfg.topupPort, cfg.topupHost, () => log(`top-up endpoint on http://${cfg.topupHost}:${server.address().port}/topup`));
+    server.unref();
+    return server;
+}
+
+
+// ---- main loop: one JSON request per line on stdin, one JSON reply per line on stdout ----
+
+let queue = Promise.resolve(); // answer strictly in order, one at a time
+
+const rl = readline.createInterface({ input: process.stdin, terminal: false });
+
+rl.on('line', (line) => {
+    queue = queue.then(async () => {
+        let req;
+        try {
+            req = JSON.parse(line);
+        } catch (e) {
+            return log(`unparseable input: ${line.slice(0, 200)}`);
+        }
+        if (req.type !== 'new' || !req.event || typeof req.event.id !== 'string') {
+            return log(`unexpected request: ${line.slice(0, 200)}`);
+        }
+
+        let res;
+        try {
+            res = await decide(req);
+        } catch (e) {
+            log(`error deciding ${req.event.id}: ${e.stack || e}`);
+            res = { action: 'reject', msg: 'error: payment check failed' };
+        }
+        process.stdout.write(JSON.stringify({ id: req.event.id, ...res }) + '\n');
+    });
+});
+
+rl.on('close', shutdown);
+process.on('SIGTERM', shutdown); // strfry sends SIGTERM when it reloads the plugin
+process.on('SIGINT', shutdown);
+
+let topupServer = null;
+if (owner) {
+    pollPayments();
+    setInterval(pollPayments, cfg.pollMs).unref();
+    if (cfg.topupPort !== null) topupServer = startTopupServer();
+}
+
+// Keep the process alive while stdin is open (the timers above are unref'd).
+process.stdin.resume();
+
+let stopping = false;
+function shutdown() {
+    if (stopping) return;
+    stopping = true;
+    queue.finally(() => {
+        try { if (owner) ledger.flush(); } finally { ledger.releaseLock(); }
+        if (topupServer) topupServer.close();
+        process.exit(0);
+    });
+}
+
+function die(msg) {
+    console.error(`[bark-paid-writes] ${msg}`);
+    process.exit(1);
+}
