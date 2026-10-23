@@ -1,14 +1,23 @@
-# bark-paid-writes: metered writes paid over Ark or Lightning
+# strfry-bark-paid-writes
 
-A strfry write-policy plugin. Each pubkey has a prepaid balance, and each event
-it writes costs a small fee. Users top up by sending sats to their own
-per-pubkey Ark address, or by paying a Lightning invoice. Payments arrive in a
-[bark](https://gitlab.com/ark-bitcoin/bark) wallet run by the relay operator
-(`barkd`), and the plugin polls its REST API to credit them.
+Metered writes for [strfry](https://github.com/hoytech/strfry) Nostr relays,
+paid with instant small payments over [Ark](https://second.tech/docs) or
+Lightning. Each event costs the writer a few sats, which deters spam and helps
+pay for running the relay.
+
+This is a strfry write-policy plugin. Each pubkey has a prepaid balance, and
+each event it writes costs a small fee. Users top up by sending sats to their
+own per-pubkey Ark address, or by paying a Lightning invoice. Payments arrive
+in a [bark](https://gitlab.com/ark-bitcoin/bark) wallet run by the relay
+operator (`barkd`), and the plugin polls its REST API to credit them.
 
 **Paid writes work on stock strfry.** The plugin uses the standard
-[plugin interface](https://github.com/hoytech/strfry/blob/master/docs/plugins.md). It is Node.js (18 or newer) with no npm
-dependencies.
+[plugin interface](https://github.com/hoytech/strfry/blob/master/docs/plugins.md).
+It is Node.js (18 or newer) with no npm dependencies.
+
+Quick start: `npm test`, then see [Try it on signet](#try-it-on-signet).
+Roadmap, risks and open questions are in [BARK_PLAN.md](BARK_PLAN.md).
+License: MIT.
 
 ## How it works
 

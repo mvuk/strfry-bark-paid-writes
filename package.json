@@ -1,0 +1,16 @@
+{
+  "name": "strfry-bark-paid-writes",
+  "version": "0.1.0",
+  "description": "strfry write-policy plugin: metered relay writes paid over Ark or Lightning with a bark wallet",
+  "private": true,
+  "license": "MIT",
+  "main": "bark-paid-writes.js",
+  "bin": { "strfry-bark-paid-writes": "bark-paid-writes.js" },
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "test": "node --test test/plugin.test.js",
+    "test:e2e": "node --test test/relay-e2e.test.mjs"
+  },
+  "repository": { "type": "git", "url": "https://github.com/mvuk/strfry-bark-paid-writes.git" },
+  "keywords": ["nostr", "strfry", "relay", "bark", "ark", "lightning", "bitcoin"]
+}
