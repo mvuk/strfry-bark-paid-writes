@@ -1,10 +1,12 @@
 // End-to-end: a real strfry relay with the plugin as its write policy, a mock
 // barkd, and a websocket client publishing signed events.
 //
-// Needs a built ./strfry and the test dependencies (cd test && npm ci).
-// Skips itself otherwise. Run from the strfry repository root:
+// Needs a strfry checkout in STRFRY_DIR with a built ./strfry binary and its
+// test dependencies installed (cd $STRFRY_DIR/test && npm ci). The paid-reads
+// case also needs a strfry build that has relay.auth.readAllowlistFile.
+// Skips cleanly when STRFRY_DIR is not set or incomplete.
 //
-//   node --test plugins/bark-paid-writes/test/relay-e2e.test.mjs
+//   STRFRY_DIR=~/src/strfry npm run test:e2e
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -16,11 +18,17 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const root = path.resolve(here, '../../..');
-const strfryBin = path.join(root, 'strfry');
-const testDeps = path.join(root, 'test/node_modules/@nostr/tools/index.js');
-const skip = !fs.existsSync(strfryBin) ? 'no ./strfry binary (run make)'
-    : !fs.existsSync(testDeps) ? 'test dependencies missing (cd test && npm ci)' : false;
+const root = process.env.STRFRY_DIR ? path.resolve(process.env.STRFRY_DIR) : null;
+const strfryBin = root && path.join(root, 'strfry');
+const testDeps = root && path.join(root, 'test/node_modules/@nostr/tools/index.js');
+const skip = !root ? 'set STRFRY_DIR to a built strfry checkout to run'
+    : !fs.existsSync(strfryBin) ? `no strfry binary at ${strfryBin} (run make in STRFRY_DIR)`
+    : !fs.existsSync(testDeps) ? `strfry test dependencies missing (cd ${root}/test && npm ci)` : false;
+
+// Paid reads need relay.auth.readAllowlistFile, which stock strfry does not have yet.
+// The config key name is compiled into the binary, so a string search is enough.
+const hasReadAllowlist = () => fs.readFileSync(strfryBin).includes('readAllowlistFile');
+const skipReads = skip || (hasReadAllowlist() ? false : 'this strfry build has no relay.auth.readAllowlistFile');
 
 const { createMockBarkd } = createRequire(import.meta.url)('./mock-barkd.js');
 
@@ -106,7 +114,7 @@ relay {
     }
 });
 
-test('paid reads via relay.auth.readAllowlistFile', { skip }, async (t) => {
+test('paid reads via relay.auth.readAllowlistFile', { skip: skipReads }, async (t) => {
     const { finalizeEvent } = await import(testDeps);
     const { openWebSocket, WsClient, waitForRelay } = await import(path.join(root, 'test/utils/websocketClient.js'));
     const { hexToBytes, signEvent } = await import(path.join(root, 'test/utils/events.js'));
