@@ -329,3 +329,29 @@ test('bad BARK_RAILS exits with a clear error', async () => {
     assert.equal(await new Promise((r) => child.on('exit', r)), 1);
     assert.match(err, /BARK_RAILS must be/);
 });
+
+test('--print-nip11 prints a strfry.conf relay.info block matching the configured prices', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bark-paid-writes-nip11-'));
+    const child = spawn(process.execPath, [PLUGIN, '--print-nip11'], {
+        cwd: dir,
+        env: { ...process.env, BARK_FEE_SATS: '1', BARK_KIND_FEES: '30023:21, 7:0.1', BARK_FREE_KINDS: '3,0', BARK_TOPUP_URL: 'https://relay.example/pay' },
+    });
+    let out = '';
+    child.stdout.on('data', (d) => out += d);
+    assert.equal(await new Promise((r) => child.on('exit', r)), 0);
+
+    const kv = Object.fromEntries(out.trim().split('\n').filter((l) => !l.startsWith('#')).map((l) => {
+        const i = l.indexOf(' = ');
+        return [l.slice(0, i), JSON.parse(l.slice(i + 3))];
+    }));
+    assert.equal(kv.paymentsUrl, 'https://relay.example/pay');
+    assert.equal(kv.restrictedWrites, 'true');
+    assert.deepEqual(JSON.parse(kv.fees), { publication: [
+        { kinds: [0, 3], amount: 0, unit: 'msats' },
+        { kinds: [7], amount: 100, unit: 'msats' },
+        { kinds: [30023], amount: 21000, unit: 'msats' },
+        { amount: 1000, unit: 'msats' },
+    ] });
+    assert.deepEqual(fs.readdirSync(dir), [], 'no ledger or lock file created');
+    fs.rmSync(dir, { recursive: true, force: true });
+});
