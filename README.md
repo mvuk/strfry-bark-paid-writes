@@ -19,6 +19,26 @@ Quick start: `npm test`, then see [Try it on signet](#try-it-on-signet).
 Roadmap, risks and open questions are in [BARK_PLAN.md](BARK_PLAN.md).
 License: MIT.
 
+## Payment rails: Lightning and Ark
+
+The plugin accepts payments on two rails. Both go through the operator's
+`barkd`, and the operator chooses one or both with `BARK_RAILS` (default
+`ark,lightning`).
+
+| Rail | How the user pays | How it is credited |
+|---|---|---|
+| **Ark (arkoor)** | Sends any amount to the pubkey's own Ark address (`tark1…`/`ark1…`). The address is shown in the `restricted:` reply and by `/topup`. Out-of-round Ark payments are instant. | barkd history entry `received_on: {type: "ark", value: <address>}` |
+| **Lightning** | Pays a BOLT11 invoice from `GET /topup?pubkey=…&sats=…`. barkd creates it with `POST /api/v1/lightning/receives/invoice`, routed through the Ark server's (captaind's) Lightning gateway. | barkd history entry `received_on: {type: "invoice", value: <bolt11>}`, net of the server's receive fee |
+
+* `BARK_RAILS=ark`: replies show only the Ark address, and `/topup?sats=` is
+  refused.
+* `BARK_RAILS=lightning`: no Ark addresses are created. Replies point to
+  `BARK_TOPUP_URL`.
+
+Each payment is credited once, whichever rail it came in on. Payments to
+addresses or invoices issued before a rail was switched off are still
+credited.
+
 ## How it works
 
 ```
@@ -52,7 +72,7 @@ client ──EVENT──▶ strfry ──JSON line──▶ bark-paid-writes ─
   invoices:
 
   ```
-  GET /topup?pubkey=<64-hex>            -> { pubkey, balance_sat, fee_sat_per_event, fee_sat_by_kind, free_kinds, ark_address }
+  GET /topup?pubkey=<64-hex>            -> { pubkey, balance_sat, fee_sat_per_event, fee_sat_by_kind, free_kinds, rails, ark_address }
   GET /topup?pubkey=<64-hex>&sats=1000  -> same, plus "invoice": "lntbs10u1…"
   ```
 
@@ -82,6 +102,7 @@ client ──EVENT──▶ strfry ──JSON line──▶ bark-paid-writes ─
 | `BARK_CHARGE` | `author` | `author` or `authed` (see above) |
 | `BARK_CHARGE_SOURCES` | `IP4,IP6` | strfry `sourceType`s that are charged |
 | `BARK_POLL_SECONDS` | `10` | how often to look for new payments |
+| `BARK_RAILS` | `ark,lightning` | payment rails to offer: `ark`, `lightning`, or both |
 | `BARK_TOPUP_PORT` | *(unset: off)* | port for the top-up endpoint (`0` = any free port) |
 | `BARK_TOPUP_HOST` | `127.0.0.1` | bind address for the top-up endpoint |
 | `BARK_TOPUP_URL` | *(empty)* | public top-up URL to show in reject messages |
@@ -166,7 +187,8 @@ stdin), against a mock barkd (`test/mock-barkd.js`) whose responses copy the
 bark-rest JSON shapes. They cover charging, per-kind and fractional prices,
 free kinds and pubkeys, Ark and Lightning crediting (each payment credited
 exactly once, pending payments ignored), `authed` mode, restarts, the lock,
-barkd being down, bearer-token auth, and the read-allowlist file. No real
+barkd being down, bearer-token auth, the read-allowlist file, and
+`BARK_RAILS` (Ark only, Lightning only). No real
 bitcoin is involved.
 
 `test/relay-e2e.test.mjs` runs a real `strfry relay` with the plugin as

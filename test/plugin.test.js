@@ -289,3 +289,43 @@ test('BARK_READ_ALLOWLIST lists pubkeys with enough credit, plus free pubkeys', 
     await waitFor(() => !keys().includes(ALICE));
     assert.deepEqual(keys(), [BOB]);
 });
+
+test('BARK_RAILS=ark: Ark address only, no Lightning invoices', async (t) => {
+    const { plugin, mock } = await setup(t, { BARK_RAILS: 'ark', BARK_TOPUP_PORT: '0', BARK_TOPUP_URL: 'https://relay.example/topup' });
+    await waitFor(() => /top-up endpoint on (\S+)/.test(plugin.stderrText));
+    const endpoint = plugin.stderrText.match(/top-up endpoint on (\S+)/)[1];
+
+    const r = await plugin.send(req(ALICE));
+    assert.match(r.msg, /Send any amount over Ark to tark1mockaddress0; credit goes to/);
+    assert.doesNotMatch(r.msg, /Lightning/);
+
+    const res = await fetch(`${endpoint}?pubkey=${ALICE}&sats=10`);
+    assert.equal(res.status, 400);
+    assert.deepEqual(await res.json(), { error: 'Lightning payments are not enabled on this relay', ark_address: 'tark1mockaddress0' });
+    assert.equal(Object.keys(mock.state.invoices).length, 0);
+});
+
+test('BARK_RAILS=lightning: invoices only, no Ark addresses handed out', async (t) => {
+    const { plugin, mock } = await setup(t, { BARK_RAILS: 'lightning', BARK_TOPUP_PORT: '0', BARK_TOPUP_URL: 'https://relay.example/topup' });
+    await waitFor(() => /top-up endpoint on (\S+)/.test(plugin.stderrText));
+    const endpoint = plugin.stderrText.match(/top-up endpoint on (\S+)/)[1];
+
+    const r = await plugin.send(req(ALICE));
+    assert.equal(r.msg, 'restricted: payment required (1 sat per event, balance 0 sat). Top up with Lightning at https://relay.example/topup; credit goes to pubkey aaaaaaaa…');
+
+    const res = await (await fetch(`${endpoint}?pubkey=${ALICE}&sats=5`)).json();
+    assert.deepEqual(res.rails, ['lightning']);
+    assert.equal(res.ark_address, null);
+    mock.settleInvoice(res.invoice);
+    await waitFor(() => /credited 5 sat/.test(plugin.stderrText));
+    assert.equal((await plugin.send(req(ALICE))).action, 'accept');
+    assert.ok(!mock.state.calls.includes('POST /api/v1/wallet/addresses/next'));
+});
+
+test('bad BARK_RAILS exits with a clear error', async () => {
+    const child = spawn(process.execPath, [PLUGIN], { env: { ...process.env, BARK_RAILS: 'ark,onchain' } });
+    let err = '';
+    child.stderr.on('data', (d) => err += d);
+    assert.equal(await new Promise((r) => child.on('exit', r)), 1);
+    assert.match(err, /BARK_RAILS must be/);
+});

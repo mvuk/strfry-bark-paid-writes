@@ -36,6 +36,7 @@ const cfg = {
     kindFeesMsat: parseKindFees(env.BARK_KIND_FEES),     // e.g. "1:1, 7:0.1, 30023:21" (kind:sats)
     freePubkeys: new Set(list(env.BARK_FREE_PUBKEYS)),
     pollMs: Math.round(parseFloat(env.BARK_POLL_SECONDS ?? '10') * 1000),
+    rails: new Set(list(env.BARK_RAILS || 'ark,lightning')),  // payment rails offered to users: ark, lightning, or both
     topupUrl: env.BARK_TOPUP_URL || '',                   // public URL shown to users (e.g. a page in front of the top-up endpoint)
     topupPort: env.BARK_TOPUP_PORT ? parseInt(env.BARK_TOPUP_PORT, 10) : null, // unset = no endpoint, 0 = any free port
     topupHost: env.BARK_TOPUP_HOST || '127.0.0.1',
@@ -46,6 +47,7 @@ const cfg = {
 };
 
 if (!(cfg.feeMsat >= 0)) die('BARK_FEE_SATS must be a non-negative number');
+if (!cfg.rails.size || [...cfg.rails].some((r) => r !== 'ark' && r !== 'lightning')) die("BARK_RAILS must be 'ark', 'lightning' or 'ark,lightning'");
 
 function parseKindFees(s) {
     const m = new Map();
@@ -131,6 +133,7 @@ async function pollPayments() {
 
 // One Ark address per pubkey, created on first need and reused afterwards.
 async function arkAddressFor(pubkey) {
+    if (!cfg.rails.has('ark')) return undefined;
     let addr = ledger.addressFor(pubkey);
     if (addr || !owner) return addr;
     try {
@@ -170,8 +173,9 @@ async function paymentRequiredMsg(pubkey, kind, fee) {
     let msg = `restricted: payment required (${price}, balance ${sats(ledger.balance(pubkey))} sat).`;
     const addr = await arkAddressFor(pubkey);
     if (addr) msg += ` Send any amount over Ark to ${addr}`;
-    if (cfg.topupUrl) msg += `${addr ? ' or' : ''} top up with Lightning at ${cfg.topupUrl}`;
-    if (addr || cfg.topupUrl) msg += `; credit goes to pubkey ${pubkey.slice(0, 8)}…`;
+    const lnUrl = cfg.rails.has('lightning') ? cfg.topupUrl : '';
+    if (lnUrl) msg += `${addr ? ' or top up' : ' Top up'} with Lightning at ${lnUrl}`;
+    if (addr || lnUrl) msg += `; credit goes to pubkey ${pubkey.slice(0, 8)}…`;
     return msg;
 }
 
@@ -201,10 +205,12 @@ function startTopupServer() {
                 fee_sat_per_event: cfg.feeMsat / 1000,
                 fee_sat_by_kind: Object.fromEntries([...cfg.kindFeesMsat].map(([k, v]) => [k, v / 1000])),
                 free_kinds: [...cfg.freeKinds],
+                rails: [...cfg.rails],
                 ark_address: await arkAddressFor(pubkey) || null,
             };
 
             if (u.searchParams.has('sats')) {
+                if (!cfg.rails.has('lightning')) return reply(400, { error: 'Lightning payments are not enabled on this relay', ark_address: out.ark_address });
                 const amount = parseInt(u.searchParams.get('sats'), 10);
                 if (!(amount > 0 && amount <= cfg.topupMaxSats)) return reply(400, { error: `sats must be 1..${cfg.topupMaxSats}` });
                 out.invoice = await barkd.createInvoice(amount, `relay credit for ${pubkey}`);
