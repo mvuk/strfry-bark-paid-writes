@@ -5,13 +5,13 @@ payments. Users pay over Ark (arkoor) or Lightning, into a bark wallet that
 the operator runs. This gives the relay spam resistance (every write costs
 something) and an income that does not depend on ads or a single patron.
 
-Status as of this branch: phases 1 and 2a are done and tested. The rest is
+Status: phases 1 and 2a are done and tested. The rest is
 proposed work.
 
 ## Phase 1: paid writes (done, plugin only)
 
-`plugins/bark-paid-writes/` uses strfry's write-policy interface, so strfry
-core does not change.
+This repository uses strfry's write-policy interface, so it works on stock
+strfry.
 
 - A per-pubkey prepaid ledger, stored in millisats in a JSON file with
   atomic replace and a lock file.
@@ -31,7 +31,7 @@ core does not change.
 
 ## Phase 2: read gating
 
-**2a (done, small core patch):** `relay.auth.readAllowlistFile`. When it is
+**2a (done, proposed upstream in STRFRY_PR_URL):** `relay.auth.readAllowlistFile`. When it is
 set, REQ, COUNT and NEG-OPEN require AUTH as a listed pubkey. It adds about
 30 lines in the ingester plus `src/ReadAllowlist.h`, and does nothing when
 empty. The plugin writes the file from balances (`BARK_READ_ALLOWLIST`).
@@ -118,9 +118,9 @@ be a natural extension).
 
 ## Open questions
 
-1. Upstream placement. Is an in-tree `plugins/` example welcome, or would
-   the maintainer rather have a separate repo listed in `docs/community.md`?
-   (`docs/community.md` exists for exactly this. See PR_strfry.md.)
+1. Upstream placement (decided): the plugin lives in this repo, with an
+   entry proposed for strfry's `docs/community.md`. Only the generic
+   `readAllowlistFile` change is proposed for strfry core.
 2. Is `readAllowlistFile` the shape Doug would accept for read gating, or
    would he prefer it to be a list of pubkeys per kind, or part of the
    existing `restrictedReadKinds` mechanism?

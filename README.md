@@ -6,7 +6,7 @@ per-pubkey Ark address, or by paying a Lightning invoice. Payments arrive in a
 [bark](https://gitlab.com/ark-bitcoin/bark) wallet run by the relay operator
 (`barkd`), and the plugin polls its REST API to credit them.
 
-strfry itself is unchanged. The plugin uses the standard
+**Paid writes work on stock strfry.** The plugin uses the standard
 [plugin interface](https://github.com/hoytech/strfry/blob/master/docs/plugins.md). It is Node.js (18 or newer) with no npm
 dependencies.
 
@@ -89,10 +89,14 @@ export BARKD_URL=http://127.0.0.1:3000 BARKD_TOKEN=... BARK_FEE_SATS=1 BARK_FREE
 exec node /path/to/strfry-bark-paid-writes/bark-paid-writes.js
 ```
 
-## Paid reads (optional, needs the `readAllowlistFile` patch)
+## Paid reads (optional, needs `relay.auth.readAllowlistFile`)
 
-strfry's plugin interface only covers writes. The companion commit adds
-`relay.auth.readAllowlistFile` to strfry: when it is set, every REQ, COUNT and
+**Paid reads need a strfry build with `relay.auth.readAllowlistFile`**, which
+has been proposed upstream in STRFRY_PR_URL and is not in a strfry release
+yet. Paid writes do not need it.
+
+strfry's plugin interface only covers writes. `readAllowlistFile` adds read
+gating to strfry: when it is set, every REQ, COUNT and
 NEG-OPEN requires NIP-42 AUTH as a pubkey listed in that file. If you set
 `BARK_READ_ALLOWLIST` to the same path, the plugin keeps the file up to date.
 Pubkeys with at least `BARK_READ_MIN_SATS` of credit, plus `BARK_FREE_PUBKEYS`,
@@ -188,6 +192,7 @@ BARKD_URL=http://127.0.0.1:3000 ./bark-paid-writes.js < test/sample-events.jsonl
   matters.
 * Polling reads the whole wallet history each time. barkd's notification
   stream (`/api/v1/notifications`) would avoid that.
-* Read gating needs the small core patch (`relay.auth.readAllowlistFile`).
+* Read gating needs a strfry build with `relay.auth.readAllowlistFile`
+  (STRFRY_PR_URL).
   Subscriptions that are already open keep running when a pubkey drops off
   the list. Only new REQs are checked.
