@@ -31,7 +31,7 @@ strfry.
 
 ## Phase 2: read gating
 
-**2a (done, proposed upstream in STRFRY_PR_URL):** `relay.auth.readAllowlistFile`. When it is
+**2a (done, proposed upstream in https://github.com/hoytech/strfry/pull/279):** `relay.auth.readAllowlistFile`. When it is
 set, REQ, COUNT and NEG-OPEN require AUTH as a listed pubkey. It adds about
 30 lines in the ingester plus `src/ReadAllowlist.h`, and does nothing when
 empty. The plugin writes the file from balances (`BARK_READ_ALLOWLIST`).

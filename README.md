@@ -122,7 +122,7 @@ exec node /path/to/strfry-bark-paid-writes/bark-paid-writes.js
 ## Paid reads (optional, needs `relay.auth.readAllowlistFile`)
 
 **Paid reads need a strfry build with `relay.auth.readAllowlistFile`**, which
-has been proposed upstream in STRFRY_PR_URL and is not in a strfry release
+has been proposed upstream in https://github.com/hoytech/strfry/pull/279 and is not in a strfry release
 yet. Paid writes do not need it.
 
 strfry's plugin interface only covers writes. `readAllowlistFile` adds read
@@ -147,7 +147,7 @@ operator's pubkey beforehand.
 Clients can read a relay's prices before posting, from its
 [NIP-11](https://github.com/nostr-protocol/nips/blob/master/11.md) document
 (`fees`, `payments_url`, `limitation.restricted_writes`). strfry builds that
-include the NIP-11 completion change (STRFRY_NIP11_PR_URL) have
+include the NIP-11 completion change (https://github.com/hoytech/strfry/pull/278) have
 `relay.info.fees`, `relay.info.paymentsUrl` and overrides for the limitation
 flags. The plugin prints a block that matches its own pricing:
 
@@ -259,6 +259,6 @@ BARKD_URL=http://127.0.0.1:3000 ./bark-paid-writes.js < test/sample-events.jsonl
 * Polling reads the whole wallet history each time. barkd's notification
   stream (`/api/v1/notifications`) would avoid that.
 * Read gating needs a strfry build with `relay.auth.readAllowlistFile`
-  (STRFRY_PR_URL).
+  (https://github.com/hoytech/strfry/pull/279).
   Subscriptions that are already open keep running when a pubkey drops off
   the list. Only new REQs are checked.
