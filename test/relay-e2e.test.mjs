@@ -94,7 +94,7 @@ relay {
     try {
         const first = await publish(1, 'before paying');
         assert.equal(first.ok, false);
-        assert.match(first.msg, /^restricted: payment required \(1 sat per event, balance 0 sat\)\. Send any amount over Ark to tark1mockaddress0/);
+        assert.match(first.msg, /^restricted: payment required \(1 sat per event, balance 0 sat\)\. Pay bitcoin:\?ark=tark1mockaddress0&lightning=lntbs1000mock0&amount=0\.00001/);
 
         assert.equal((await publish(0, '{"name":"free kind"}')).ok, true, 'free kind accepted');
 

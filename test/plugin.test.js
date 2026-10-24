@@ -96,17 +96,37 @@ test('events from import/sync/stream are not charged', async (t) => {
     }
 });
 
-test('out of credit: reject with restricted: and a reusable per-pubkey Ark address', async (t) => {
+test('out of credit: reject with restricted: and one BIP-321 URI (per-pubkey Ark address + Lightning offer)', async (t) => {
     const { plugin, mock } = await setup(t);
     const r1 = await plugin.send(req(ALICE));
     assert.equal(r1.action, 'reject');
-    assert.match(r1.msg, /^restricted: payment required \(1 sat per event, balance 0 sat\)\. Send any amount over Ark to tark1mockaddress0/);
+    assert.equal(r1.msg, 'restricted: payment required (1 sat per event, balance 0 sat). Pay bitcoin:?ark=tark1mockaddress0&lightning=lntbs1000mock0&amount=0.00001; credit goes to pubkey aaaaaaaa…');
 
     const r2 = await plugin.send(req(ALICE));
-    assert.match(r2.msg, /tark1mockaddress0/, 'same address on the second rejection');
+    assert.match(r2.msg, /ark=tark1mockaddress0&lightning=lntbs1000mock0&/, 'same address and same open invoice on the second rejection');
     const r3 = await plugin.send(req(BOB));
-    assert.match(r3.msg, /tark1mockaddress1/, 'different pubkey, different address');
+    assert.match(r3.msg, /ark=tark1mockaddress1&lightning=lntbs1000mock1&/, 'different pubkey, different address and invoice');
     assert.equal(mock.state.calls.filter((c) => c === 'POST /api/v1/wallet/addresses/next').length, 2);
+    assert.equal(Object.keys(mock.state.invoices).length, 2);
+});
+
+test('a paid offer invoice credits the pubkey and is not offered again', async (t) => {
+    const { plugin, mock } = await setup(t, { BARK_OFFER_SATS: '2' });
+    const r1 = await plugin.send(req(ALICE));
+    assert.match(r1.msg, /Pay bitcoin:\?ark=tark1mockaddress0&lightning=lntbs2mock0&amount=0\.00000002;/);
+    mock.settleInvoice('lntbs2mock0');
+    await waitFor(() => /credited 2 sat/.test(plugin.stderrText));
+    assert.equal((await plugin.send(req(ALICE))).action, 'accept');
+    assert.equal((await plugin.send(req(ALICE))).action, 'accept');
+    const r2 = await plugin.send(req(ALICE));
+    assert.match(r2.msg, /&lightning=lntbs2mock1&/, 'a fresh invoice once the old one is paid');
+});
+
+test('BARK_OFFER_SATS=0: the URI carries only the Ark address, any amount', async (t) => {
+    const { plugin, mock } = await setup(t, { BARK_OFFER_SATS: '0' });
+    const r = await plugin.send(req(ALICE));
+    assert.equal(r.msg, 'restricted: payment required (1 sat per event, balance 0 sat). Pay bitcoin:?ark=tark1mockaddress0 (any amount); credit goes to pubkey aaaaaaaa…');
+    assert.equal(Object.keys(mock.state.invoices).length, 0);
 });
 
 test('arkoor payment to the pubkey address buys exactly that many events', async (t) => {
@@ -152,6 +172,7 @@ test('Lightning top-up via the local endpoint credits the net amount received', 
     assert.equal(res.balance_sat, 0);
     assert.match(res.ark_address, /^tark1mock/);
     assert.match(res.invoice, /^lntbs10mock/);
+    assert.equal(res.bip321, `bitcoin:?ark=${res.ark_address}&lightning=${res.invoice}&amount=0.0000001`);
     assert.equal(mock.state.invoices[res.invoice].description, `relay credit for ${CAROL}`);
 
     const rej = await plugin.send(req(CAROL));
@@ -162,6 +183,7 @@ test('Lightning top-up via the local endpoint credits the net amount received', 
     const after = await (await fetch(`${endpoint}?pubkey=${CAROL}`)).json();
     assert.equal(after.balance_sat, 8);
     assert.equal(after.invoice, undefined);
+    assert.equal(after.bip321, `bitcoin:?ark=${res.ark_address}`);
 });
 
 test("BARK_CHARGE=authed charges the NIP-42 pubkey and asks unauthenticated clients to auth", async (t) => {
@@ -296,7 +318,7 @@ test('BARK_RAILS=ark: Ark address only, no Lightning invoices', async (t) => {
     const endpoint = plugin.stderrText.match(/top-up endpoint on (\S+)/)[1];
 
     const r = await plugin.send(req(ALICE));
-    assert.match(r.msg, /Send any amount over Ark to tark1mockaddress0; credit goes to/);
+    assert.match(r.msg, /Pay bitcoin:\?ark=tark1mockaddress0 \(any amount\); credit goes to/);
     assert.doesNotMatch(r.msg, /Lightning/);
 
     const res = await fetch(`${endpoint}?pubkey=${ALICE}&sats=10`);
@@ -311,11 +333,12 @@ test('BARK_RAILS=lightning: invoices only, no Ark addresses handed out', async (
     const endpoint = plugin.stderrText.match(/top-up endpoint on (\S+)/)[1];
 
     const r = await plugin.send(req(ALICE));
-    assert.equal(r.msg, 'restricted: payment required (1 sat per event, balance 0 sat). Top up with Lightning at https://relay.example/topup; credit goes to pubkey aaaaaaaa…');
+    assert.equal(r.msg, 'restricted: payment required (1 sat per event, balance 0 sat). Pay bitcoin:?lightning=lntbs1000mock0&amount=0.00001 or top up with Lightning at https://relay.example/topup; credit goes to pubkey aaaaaaaa…');
 
     const res = await (await fetch(`${endpoint}?pubkey=${ALICE}&sats=5`)).json();
     assert.deepEqual(res.rails, ['lightning']);
     assert.equal(res.ark_address, null);
+    assert.equal(res.bip321, `bitcoin:?lightning=${res.invoice}&amount=0.00000005`);
     mock.settleInvoice(res.invoice);
     await waitFor(() => /credited 5 sat/.test(plugin.stderrText));
     assert.equal((await plugin.send(req(ALICE))).action, 'accept');

@@ -41,12 +41,14 @@ const cfg = {
     topupPort: env.BARK_TOPUP_PORT ? parseInt(env.BARK_TOPUP_PORT, 10) : null, // unset = no endpoint, 0 = any free port
     topupHost: env.BARK_TOPUP_HOST || '127.0.0.1',
     topupMaxSats: parseInt(env.BARK_TOPUP_MAX_SATS || '100000', 10),
+    offerSats: parseInt(env.BARK_OFFER_SATS ?? '1000', 10),   // Lightning invoice put in the restricted: reply's BIP-321 URI (0 = none)
     barkdTimeoutMs: parseInt(env.BARKD_TIMEOUT_MS || '3000', 10),
     readAllowlist: env.BARK_READ_ALLOWLIST || '',         // file for strfry's relay.auth.readAllowlistFile
     readMinMsat: Math.round(parseFloat(env.BARK_READ_MIN_SATS ?? '1') * 1000),
 };
 
 if (!(cfg.feeMsat >= 0)) die('BARK_FEE_SATS must be a non-negative number');
+if (!(cfg.offerSats >= 0)) die('BARK_OFFER_SATS must be a non-negative whole number');
 if (!cfg.rails.size || [...cfg.rails].some((r) => r !== 'ark' && r !== 'lightning')) die("BARK_RAILS must be 'ark', 'lightning' or 'ark,lightning'");
 
 function parseKindFees(s) {
@@ -145,6 +147,7 @@ async function pollPayments() {
                 const d = dest.destination || {};
                 const pubkey = ledger.ownerOf(d.type, d.value);
                 if (!pubkey || !(dest.amount_sat > 0)) return;
+                if (d.type === 'invoice') ledger.markInvoicePaid(d.value);
                 if (ledger.credit(`${m.id}:${i}`, pubkey, dest.amount_sat * 1000)) {
                     log(`credited ${dest.amount_sat} sat to ${pubkey} (movement ${m.id}, ${d.type})`);
                 }
@@ -169,6 +172,39 @@ async function arkAddressFor(pubkey) {
         log(`could not get an Ark address from barkd: ${e.message}`);
     }
     return addr;
+}
+
+
+// The pubkey's open Lightning offer for the restricted: reply: one invoice for
+// BARK_OFFER_SATS, reused while unpaid and younger than OFFER_REUSE_SECONDS, so
+// repeated rejections don't each create an invoice.
+const OFFER_REUSE_SECONDS = 600;
+async function offerInvoiceFor(pubkey) {
+    if (!cfg.rails.has('lightning') || !cfg.offerSats || !owner) return undefined;
+    const open = ledger.openOfferFor(pubkey, OFFER_REUSE_SECONDS);
+    if (open) return open;
+    try {
+        const invoice = await barkd.createInvoice(cfg.offerSats, `relay credit for ${pubkey}`);
+        ledger.addInvoice(invoice, pubkey, { offer: true });
+        return invoice;
+    } catch (e) {
+        log(`could not get a Lightning invoice from barkd: ${e.message}`);
+        return undefined;
+    }
+}
+
+// One payment request for every rail that is on: a BIP-321 URI with `ark=`
+// (BIP-321 reuses the bech32m HRP as the key; it stays `ark` for tark1…) and
+// `lightning=`. A wallet paying it with NWC-321 `pay` picks `ark` when the
+// address is on its own Ark server, else `lightning`. Without an invoice the
+// URI has no amount: any amount sent to the Ark address is credited.
+const btc = (satoshi) => (satoshi / 1e8).toFixed(8).replace(/\.?0+$/, '');
+function bip321({ ark, invoice, amountSat }) {
+    const params = [];
+    if (ark) params.push(`ark=${ark}`);
+    if (invoice) params.push(`lightning=${invoice}`);
+    if (invoice && amountSat) params.push(`amount=${btc(amountSat)}`);
+    return params.length ? `bitcoin:?${params.join('&')}` : undefined;
 }
 
 
@@ -198,10 +234,12 @@ async function paymentRequiredMsg(pubkey, kind, fee) {
     const price = cfg.kindFeesMsat.has(kind) ? `${sats(fee)} sat per kind ${kind} event` : `${sats(fee)} sat per event`;
     let msg = `restricted: payment required (${price}, balance ${sats(ledger.balance(pubkey))} sat).`;
     const addr = await arkAddressFor(pubkey);
-    if (addr) msg += ` Send any amount over Ark to ${addr}`;
+    const invoice = await offerInvoiceFor(pubkey);
+    const uri = bip321({ ark: addr, invoice, amountSat: cfg.offerSats });
+    if (uri) msg += ` Pay ${uri}${invoice ? '' : ' (any amount)'}`;
     const lnUrl = cfg.rails.has('lightning') ? cfg.topupUrl : '';
-    if (lnUrl) msg += `${addr ? ' or top up' : ' Top up'} with Lightning at ${lnUrl}`;
-    if (addr || lnUrl) msg += `; credit goes to pubkey ${pubkey.slice(0, 8)}…`;
+    if (lnUrl) msg += `${uri ? ' or top up' : ' Top up'} with Lightning at ${lnUrl}`;
+    if (uri || lnUrl) msg += `; credit goes to pubkey ${pubkey.slice(0, 8)}…`;
     return msg;
 }
 
@@ -209,7 +247,9 @@ async function paymentRequiredMsg(pubkey, kind, fee) {
 // ---- optional top-up endpoint (Lightning invoices) ----
 //
 // GET /topup?pubkey=<hex>[&sats=<n>]
-//   -> { pubkey, balance_sat, fee_sat_per_event, ark_address, invoice? }
+//   -> { pubkey, balance_sat, fee_sat_per_event, ark_address, bip321, invoice? }
+// `bip321` is the payment request to hand to a wallet (e.g. NWC-321 `pay`):
+// the Ark address, plus the invoice and amount when `sats` is given.
 // Binds to localhost by default; put a web page or reverse proxy in front.
 
 function startTopupServer() {
@@ -234,6 +274,7 @@ function startTopupServer() {
                 rails: [...cfg.rails],
                 ark_address: await arkAddressFor(pubkey) || null,
             };
+            out.bip321 = bip321({ ark: out.ark_address }) || null;
 
             if (u.searchParams.has('sats')) {
                 if (!cfg.rails.has('lightning')) return reply(400, { error: 'Lightning payments are not enabled on this relay', ark_address: out.ark_address });
@@ -241,6 +282,7 @@ function startTopupServer() {
                 if (!(amount > 0 && amount <= cfg.topupMaxSats)) return reply(400, { error: `sats must be 1..${cfg.topupMaxSats}` });
                 out.invoice = await barkd.createInvoice(amount, `relay credit for ${pubkey}`);
                 ledger.addInvoice(out.invoice, pubkey);
+                out.bip321 = bip321({ ark: out.ark_address, invoice: out.invoice, amountSat: amount });
             }
             reply(200, out);
         } catch (e) {

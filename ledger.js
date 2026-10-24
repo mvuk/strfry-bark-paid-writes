@@ -19,7 +19,7 @@ const EMPTY = () => ({
     balances: {},        // pubkey -> msat
     addressOwner: {},    // Ark address -> pubkey
     pubkeyAddress: {},   // pubkey -> Ark address
-    invoiceOwner: {},    // BOLT11 invoice -> { pubkey, createdAt }
+    invoiceOwner: {},    // BOLT11 invoice -> { pubkey, createdAt, offer?, paid? }
     credited: {},        // barkd movement id -> { pubkey, msat, at }  (audit trail, prevents double credit)
 });
 
@@ -103,9 +103,24 @@ class Ledger {
         this.flush();
     }
 
-    addInvoice(invoice, pubkey) {
-        this.data.invoiceOwner[invoice] = { pubkey, createdAt: Math.floor(Date.now() / 1000) };
+    addInvoice(invoice, pubkey, { offer = false } = {}) {
+        this.data.invoiceOwner[invoice] = { pubkey, createdAt: Math.floor(Date.now() / 1000), ...(offer && { offer: true }) };
         this.flush();
+    }
+
+    markInvoicePaid(invoice) {
+        const inv = this.data.invoiceOwner[invoice];
+        if (inv && !inv.paid) { inv.paid = true; this.scheduleFlush(); }
+    }
+
+    // The pubkey's newest unpaid offer invoice created in the last `maxAgeSec` seconds.
+    openOfferFor(pubkey, maxAgeSec) {
+        const since = Math.floor(Date.now() / 1000) - maxAgeSec;
+        let best;
+        for (const [invoice, v] of Object.entries(this.data.invoiceOwner)) {
+            if (v.offer && v.pubkey === pubkey && !v.paid && v.createdAt >= since && (!best || v.createdAt >= best[1])) best = [invoice, v.createdAt];
+        }
+        return best?.[0];
     }
 
     ownerOf(type, value) {

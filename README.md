@@ -27,13 +27,22 @@ The plugin accepts payments on two rails. Both go through the operator's
 
 | Rail | How the user pays | How it is credited |
 |---|---|---|
-| **Ark (arkoor)** | Sends any amount to the pubkey's own Ark address (`tark1…`/`ark1…`). The address is shown in the `restricted:` reply and by `/topup`. Out-of-round Ark payments are instant. | barkd history entry `received_on: {type: "ark", value: <address>}` |
-| **Lightning** | Pays a BOLT11 invoice from `GET /topup?pubkey=…&sats=…`. barkd creates it with `POST /api/v1/lightning/receives/invoice`, routed through the Ark server's (captaind's) Lightning gateway. | barkd history entry `received_on: {type: "invoice", value: <bolt11>}`, net of the server's receive fee |
+| **Ark (arkoor)** | Sends any amount to the pubkey's own Ark address (`tark1…`/`ark1…`). The address is in the `restricted:` reply and in `/topup`. Out-of-round Ark payments are instant. | barkd history entry `received_on: {type: "ark", value: <address>}` |
+| **Lightning** | Pays a BOLT11 invoice: the one in the `restricted:` reply (`BARK_OFFER_SATS`), or one from `GET /topup?pubkey=…&sats=…`. barkd creates it with `POST /api/v1/lightning/receives/invoice`, routed through the Ark server's (captaind's) Lightning gateway. | barkd history entry `received_on: {type: "invoice", value: <bolt11>}`, net of the server's receive fee |
 
-* `BARK_RAILS=ark`: replies show only the Ark address, and `/topup?sats=` is
-  refused.
-* `BARK_RAILS=lightning`: no Ark addresses are created. Replies point to
-  `BARK_TOPUP_URL`.
+**One payment request for both rails.** The `restricted:` reply and `/topup`
+present what to pay as a single [BIP-321](https://github.com/bitcoin/bips/blob/master/bip-0321.mediawiki)
+URI, `bitcoin:?ark=<address>&lightning=<bolt11>&amount=<btc>`, with only the
+rails that are on. A client can hand it unchanged to its wallet with the
+[NWC-321](https://github.com/nostr-wallet-connect/nwc/blob/main/321.md) `pay`
+method: an Ark wallet on the relay's Ark server pays the `ark` address (the
+address encodes its Ark server, so the wallet decides), any other wallet pays
+the `lightning` invoice. Either way the credit lands on the same pubkey.
+
+* `BARK_RAILS=ark`: replies show only the Ark address (`bitcoin:?ark=…`, any
+  amount), and `/topup?sats=` is refused.
+* `BARK_RAILS=lightning`: no Ark addresses are created. Replies carry only the
+  invoice (`bitcoin:?lightning=…`) and point to `BARK_TOPUP_URL`.
 
 Each payment is credited once, whichever rail it came in on. Payments to
 addresses or invoices issued before a rail was switched off are still
@@ -57,12 +66,15 @@ client ──EVENT──▶ strfry ──JSON line──▶ bark-paid-writes ─
 * **Out of credit.** The event is rejected with an `OK false` message such as:
 
   ```
-  restricted: payment required (1 sat per event, balance 0 sat). Send any amount over Ark to
-  tark1pem36…n8 or top up with Lightning at https://relay.example/topup; credit goes to pubkey aaaaaaaa…
+  restricted: payment required (1 sat per event, balance 0 sat). Pay bitcoin:?ark=tark1pem36…n8&lightning=lntbs10u1…&amount=0.00001
+  or top up with Lightning at https://relay.example/topup; credit goes to pubkey aaaaaaaa…
   ```
 
   The Ark address is created for that pubkey the first time it is needed, and
-  it is reused after that.
+  it is reused after that. The invoice is for `BARK_OFFER_SATS` and is reused
+  for that pubkey while it is unpaid and less than 10 minutes old. Any amount
+  sent to the Ark address is credited, whatever the URI's `amount` says. With
+  `BARK_OFFER_SATS=0` the URI has only the address and no amount.
 * **Crediting.** Every `BARK_POLL_SECONDS`, the plugin reads `GET /api/v1/history`
   from barkd. Any successful movement received on a pubkey's Ark address or on
   one of its invoices is credited once, keyed by the movement id. Lightning
@@ -72,8 +84,8 @@ client ──EVENT──▶ strfry ──JSON line──▶ bark-paid-writes ─
   invoices:
 
   ```
-  GET /topup?pubkey=<64-hex>            -> { pubkey, balance_sat, fee_sat_per_event, fee_sat_by_kind, free_kinds, rails, ark_address }
-  GET /topup?pubkey=<64-hex>&sats=1000  -> same, plus "invoice": "lntbs10u1…"
+  GET /topup?pubkey=<64-hex>            -> { pubkey, balance_sat, fee_sat_per_event, fee_sat_by_kind, free_kinds, rails, ark_address, bip321 }
+  GET /topup?pubkey=<64-hex>&sats=1000  -> same, plus "invoice": "lntbs10u1…", and bip321 = "bitcoin:?ark=…&lightning=lntbs10u1…&amount=0.00001"
   ```
 
   It binds to `127.0.0.1` by default. Put a small web page or a reverse proxy
@@ -107,6 +119,7 @@ client ──EVENT──▶ strfry ──JSON line──▶ bark-paid-writes ─
 | `BARK_TOPUP_HOST` | `127.0.0.1` | bind address for the top-up endpoint |
 | `BARK_TOPUP_URL` | *(empty)* | public top-up URL to show in reject messages |
 | `BARK_TOPUP_MAX_SATS` | `100000` | largest invoice the endpoint will create |
+| `BARK_OFFER_SATS` | `1000` | amount of the Lightning invoice in the `restricted:` reply's BIP-321 URI (`0` = no invoice, Ark address only) |
 | `BARK_READ_ALLOWLIST` | *(empty: off)* | file to write for strfry's `relay.auth.readAllowlistFile` (see below) |
 | `BARK_READ_MIN_SATS` | `1` | balance a pubkey needs to be listed as a reader |
 
